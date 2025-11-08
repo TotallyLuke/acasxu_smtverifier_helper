@@ -34,53 +34,5 @@ To run all the experiments of the paper run:
 
 Recall to download the dataset and preprocess it.
 
-# Usage
-
-To run a single experiment run 
-
-	$ python3 synthesizer.py -h 
-
-to see the help screen (see also inside RunExperiments.py to have example of possible commands).
-
-Once you are done, run
-
-	$ python3 latex.py
-
-to compute the table of numbers (output file table.tex).
-
-Optionally, create the `img` folder and run 
-
-	$ python3 stats.py 1-0.0001-10x10-50-20-100-L
-	$ python3 stats.py 1-0.0001-6x9-50-20-100-L
-	$ python3 stats.py 1-0.0001-7x8-50-20-100-L
-	$ python3 stats.py 1-0.0001-8x7-50-20-100-L
-	$ python3 stats.py 1-0.0001-9x6-50-20-100-L
-	$ python3 stats.py 1-0.001-10x10-50-20-100-L
-	$ python3 stats.py 1-0.001-6x9-50-20-100-L
-	$ python3 stats.py 1-0.001-7x8-50-20-100-L
-	$ python3 stats.py 1-0.001-8x7-50-20-100-L
-	$ python3 stats.py 1-0.001-9x6-50-20-100-L
-	$ python3 stats.py 1-0.01-10x10-50-20-100-L
-	$ python3 stats.py 1-0.01-6x9-50-20-100-L
-	$ python3 stats.py 1-0.01-7x8-50-20-100-L
-	$ python3 stats.py 1-0.01-8x7-50-20-100-L
-	$ python3 stats.py 1-0.01-9x6-50-20-100-L
-	$ python3 stats.py 2-0.0001-10x10-50-20-100-L
-	$ python3 stats.py 2-0.0001-6x9-50-20-100-L
-	$ python3 stats.py 2-0.0001-7x8-50-20-100-L
-	$ python3 stats.py 2-0.0001-8x7-50-20-100-L
-	$ python3 stats.py 2-0.0001-9x6-50-20-100-L
-	$ python3 stats.py 2-0.001-10x10-50-20-100-L
-	$ python3 stats.py 2-0.001-6x9-50-20-100-L
-	$ python3 stats.py 2-0.001-7x8-50-20-100-L
-	$ python3 stats.py 2-0.001-8x7-50-20-100-L
-	$ python3 stats.py 2-0.001-9x6-50-20-100-L
-	$ python3 stats.py 2-0.01-10x10-50-20-100-L
-	$ python3 stats.py 2-0.01-6x9-50-20-100-L
-	$ python3 stats.py 2-0.01-7x8-50-20-100-L
-	$ python3 stats.py 2-0.01-8x7-50-20-100-L
-	$ python3 stats.py 2-0.01-9x6-50-20-100-L
-	
-to compute graphics (need matplotlib).
 	
 	
