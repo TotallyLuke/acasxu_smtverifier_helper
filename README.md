@@ -1,10 +1,13 @@
 # Paper
 
-This repository contains the supplementary material of the paper:
+This repository is forked from [matteozavatteri/certified-nn-ecai24](https://github.com/matteozavatteri/certified-nn-ecai24), that 
+contains the supplementary material of the paper:
 
 	Matteo Zavatteri, Davide Bresolin, Nicolò Navarin. 
 	Automated Synthesis of Certified Neural Networks. 
 	27TH EUROPEAN CONFERENCE ON ARTIFICIAL INTELLIGENCE (ECAI 2024).
+
+We only needed `milp.py`, `conf.py` from there, hence most of the files have been removed. 
 
 # Dataset
 

@@ -1,0 +1,281 @@
+# verify_motion_property.py
+import math
+import time
+from typing import List, Dict
+
+import gurobipy
+
+from add_argmax_output_constraints import add_argmax_output_constraints
+from arc_bbox import get_arc_bounding_box
+from milp import milp_encoding
+from single_verify_motion_property_trapez import single_verify_motion_property
+from NNet.python.nnet import NNet
+from test_nnet import FeedForwardNet
+from utils import Bound, VerificationResult, summarize_model, merge_bounding_boxes
+from conf import ubpos, lbpos, NN_Inputs, NN_Outputs, mean_x, range_x, mean_y, range_y, \
+    mean_psi, range_psi
+from trapezoid import secant_line_coeffs, tangent_line_coeffs, psi_to_xy
+
+import torch
+import torch.nn as nn
+import onnx
+import onnx2torch
+from gurobipy import GRB
+
+
+def load_trained_model(path: str) -> nn.Module:
+    """load an onnx model and convert it to a torch module"""
+    onnx_model = onnx.load(path)
+    torch_model = onnx2torch.convert(onnx_model)
+    torch_model.eval()
+    return torch_model
+
+
+def graphmodule_to_sequential(graph_module: torch.fx.GraphModule) -> nn.Sequential:
+    """extract linear and relu layers from a graphmodule into a sequential model"""
+    layers = []
+    for _, module in graph_module.named_modules():
+        if isinstance(module, (nn.Linear, nn.ReLU)):
+            layers.append(module)
+    return nn.Sequential(*layers)
+
+
+# def generate_centered_bboxes(n_intervals: int, d_psi: float, psi_lb:float, psi_ub:float):
+#     assert n_intervals % 2 == 1, "n_intervals must be odd to allow centering"
+#
+#     half_width: int = n_intervals // 2
+#     bboxes = []
+#
+#     # iterates from -half to +half inclusive
+#     for i in range(-half_width, half_width + 1):
+#         bboxes.append(get_arc_bounding_box(psi_lb - (i*d_psi), psi_ub - (i*d_psi), speed=200.0))
+#
+#     return bboxes
+
+def multiple_verify_motion_property(model: nn.Module, turn, controller, psi_deg_init, n_intervals=3, verbose=False):
+    # psi_init - turn >= pi - 0.01 = > overflow
+    # psi_init + 3 - turn <= -pi + 0.01 = > underflow
+    #
+    # overflow = > subtract 2pi
+    # underflow = > add 2pi
+    interv_width = 3.0
+    psi_init = math.radians(psi_deg_init)
+    underflow = math.radians(psi_init+3.0) - turn <= -math.pi+0.001
+    overflow = math.radians(psi_init) - turn >= math.pi-0.001
+    assert not (underflow and overflow)
+    current_state_bounds = {
+        "x": Bound(0.0, ubpos),
+        "y": Bound(-61000.0, ubpos),
+        "psi": Bound(math.radians(psi_deg_init), math.radians(psi_init + n_intervals*interv_width))
+    }
+    next_state_bounds = {
+        "x": Bound(lbpos, ubpos),
+        "y": Bound(lbpos, ubpos),
+        "psi": Bound(current_state_bounds["psi"].lb - turn + (underflow*2*math.pi) - (overflow*2*math.pi),
+                     current_state_bounds["psi"].ub - turn + (underflow*2*math.pi) - (overflow*2*math.pi))
+    }
+    input_bounds: List[Dict[str, Bound]] = [current_state_bounds, next_state_bounds]
+
+    assert turn in [math.radians(a) for a in [0.0, 1.5, -1.5, 3.0, -3.0]]
+
+
+    m = milp_encoding(model, K=2, input_bounds=input_bounds, NN_Inputs=NN_Inputs, NN_Outputs=NN_Outputs)
+    if verbose:
+        summarize_model(m)
+
+    # turn and its sin&cos are fixed
+    delta_psi = -turn
+    cos_dp = math.cos(turn)
+    sin_dp = math.sin(turn)
+
+    # main state variables
+    x = m.getVarByName("x0_0")
+    y = m.getVarByName("x0_1")
+    psi = m.getVarByName("x0_2")
+
+
+    # enforce exactly one bbox selection
+
+
+    vx_start = math.cos(math.radians(psi_deg_init)) * 200.0
+    vy_start = math.sin(math.radians(psi_deg_init)) * 200.0
+
+    vx_end = math.cos(math.radians(psi_deg_init + interv_width*n_intervals)) * 200.0
+    vy_end = math.sin(math.radians(psi_deg_init + interv_width*n_intervals)) * 200.0
+   # main vx, vy
+    vx = m.addVar(lb=min(vx_start, vx_end)-0.001, ub=max(vx_start, vx_end)+0.001, name="vx")
+    vy = m.addVar(lb=min(vy_start, vy_end)-0.001, ub=max(vy_start, vy_end)+0.001, name="vy")
+
+    b = [m.addVar(vtype=GRB.BINARY, name=f"bbox_sel_{i}") for i in range(n_intervals)]
+    m.addConstr(gurobipy.quicksum(b) == 1, name="one_bbox_active")
+    # per-bbox candidate variables and indicator constraints
+
+    psi_interval = 3.0
+
+
+    g = n_intervals * interv_width
+    A1, B1, C1 = tangent_line_coeffs(*psi_to_xy(math.radians(psi_deg_init), 200.0))
+    A2, B2, C2 = tangent_line_coeffs(*psi_to_xy(math.radians(psi_deg_init + g / 2.0), 200.0))
+    A3, B3, C3 = tangent_line_coeffs(*psi_to_xy(math.radians(psi_deg_init + g), 200.0))
+    A4, B4, C4 = secant_line_coeffs(*psi_to_xy(math.radians(psi_deg_init), 200.0),
+                                    *psi_to_xy(math.radians(psi_deg_init + g), 200.0))
+    if verbose:
+        print(f"in interval ",
+            A1 * vx_start + B1 * vy_start + C1 <= 0 and A2 * vx_start + B2 * vy_start + C2 <= 0
+            and A3 * vx_start + B3 * vy_start + C3 <= 0 <= A4 * vx_start + B4 * vy_start + C4)
+
+        print(A1 * vx_end + B1 * vy_end + C1 <= 0 and A2 * vx_end + B2 * vy_end + C2 <= 0
+              and A3 * vx_end + B3 * vy_end + C3 <= 0 <= A4 * vx_end + B4 * vy_end + C4)
+
+
+
+    m.addConstr(A1 * vx + B1 * vy + C1 <= 0, name=f"trapezoid_1")
+    m.addConstr(A2 * vx + B2 * vy + C2 <= 0, name=f"trapezoid_2")
+    m.addConstr(A3 * vx + B3 * vy + C3 <= 0, name=f"trapezoid_3")
+    m.addConstr(A4 * vx + B4 * vy + C4 >= 0, name=f"trapezoid_4")
+    #
+    #
+    # for i in range(n_intervals):
+    #     psi_interval = 3.0
+    #
+    #
+    #     g = i * interv_width
+    #     A1, B1, C1 = tangent_line_coeffs(*psi_to_xy(math.radians(g+psi_deg_init), 200.0))
+    #     A2, B2, C2 = tangent_line_coeffs(*psi_to_xy(math.radians(g+psi_deg_init + psi_interval / 2.0), 200.0))
+    #     A3, B3, C3 = tangent_line_coeffs(*psi_to_xy(math.radians(g+psi_deg_init + psi_interval), 200.0))
+    #     A4, B4, C4 = secant_line_coeffs(*psi_to_xy(math.radians(g+psi_deg_init), 200.0),
+    #                                     *psi_to_xy(math.radians(g+psi_deg_init + psi_interval), 200.0))
+    #     if verbose:
+    #         print(f"in interval {i}",
+    #             A1 * vx_start + B1 * vy_start + C1 <= 0 and A2 * vx_start + B2 * vy_start + C2 <= 0
+    #             and A3 * vx_start + B3 * vy_start + C3 <= 0 <= A4 * vx_start + B4 * vy_start + C4)
+    #
+    #         print(A1 * vx_end + B1 * vy_end + C1 <= 0 and A2 * vx_end + B2 * vy_end + C2 <= 0
+    #               and A3 * vx_end + B3 * vy_end + C3 <= 0 <= A4 * vx_end + B4 * vy_end + C4)
+    #
+    #     m.addConstr(A1 * vx + B1 * vy + C1 <= 0, name=f"trapezoid_1_{i}")
+    #     m.addConstr(A2 * vx + B2 * vy + C2 <= 0, name=f"trapezoid_2_{i}")
+    #     m.addConstr(A3 * vx + B3 * vy + C3 <= 0, name=f"trapezoid_3_{i}")
+    #     m.addGenConstrIndicator(b[i], True, A4 * vx + B4 * vy + C4 >= 0, name=f"trapezoid_4_{i}")
+
+    x_intermediate = x + vx
+    y_intermediate = y + vy
+
+
+    x_next = m.getVarByName("x1_0")
+    y_next = m.getVarByName("x1_1")
+    psi_next = m.getVarByName("x1_2")
+
+    m.addConstr(
+        x_next == cos_dp * x_intermediate + sin_dp * y_intermediate - 200,
+        name="state_update_x"
+    )
+
+    m.addConstr(
+        y_next == -sin_dp * x_intermediate + cos_dp * y_intermediate,
+        name="state_update_y"
+    )
+
+    # add_angle_wrapping_constraint(m, psi, delta_psi, psi_next, "psi")
+    m.addConstr(
+        psi_next == psi + delta_psi + (underflow*2*math.pi) - (overflow*2*math.pi),
+        name="state_update_psi"
+    )
+
+    controller_input_bounds = [{"x": Bound(-0.5, +0.5), "y": Bound(-0.5, +0.5), "psi": Bound(-0.5, +0.5)}]
+    controller_Outputs = ["o1", "o2", "o3", "o4", "o5"]
+    kk=2
+    m = milp_encoding(controller, K=1, input_bounds=controller_input_bounds, NN_Inputs=NN_Inputs,
+                      NN_Outputs=controller_Outputs, var_offset=kk, gurobi_model=m)
+
+
+    xnorm = m.getVarByName("x2_0")
+    ynorm = m.getVarByName("x2_1")
+    psinorm = m.getVarByName("x2_2")
+
+
+    m.addConstr(xnorm == ((x - mean_x) / range_x), name="normalize_x")
+    m.addConstr(ynorm == ((y - mean_y) / range_y), name="normalize_y")
+    m.addConstr(psinorm == ((psi - mean_psi) / range_psi), name="normalize_psi")
+
+    m.write("motion_model.lp")
+    output = m.getVarByName(f"y0_0")
+    output_next = m.getVarByName(f"y1_0")
+    outputs_controller = [m.getVarByName(f"y{kk}_{i}") for i in range(5)]
+    # check existence of two inputs producing outputs of opposite sign
+    m.addConstr(output <= 1.0, name="output_nonpositive")
+    m.addConstr(output_next >= 0.05, name="output_next_positive")
+    add_argmax_output_constraints(m, outputs_controller, 4)
+
+    start_time = time.time()
+    m.optimize()
+    end_time = time.time()
+
+    elapsed_time = end_time - start_time
+    print(f"Optimization time: {elapsed_time:.3f} seconds")
+    if m.Status == GRB.OPTIMAL:
+
+        x0 = [m.getVarByName(f"x0_{i}").X for i in range(len(NN_Inputs))]
+        x1 = [m.getVarByName(f"x1_{i}").X for i in range(len(NN_Inputs))]
+
+        print("Optimal solution:")
+
+        counterexample_physical = x0
+
+        result = VerificationResult(
+            safe=False,
+            counterexample=x0,
+            counterexample_normalized=[xnorm.X, ynorm.X, psinorm.X]
+        )
+    elif m.Status == GRB.INFEASIBLE:
+        result = VerificationResult(True, None, None)
+    else:
+        print(f"Model status: {m.Status}")
+        result = VerificationResult(False, None, None)
+    m.dispose()
+    return result
+
+
+def sequential_multi_verification(psis, n_intervals):
+    to_return = []
+    for psi in psis:
+        result: VerificationResult = multiple_verify_motion_property(model, TURN, seq.net, psi, n_intervals=n_intervals,
+                                                                     verbose=False)
+        if not result.safe:
+            x_cex, y_cex, psi_cex = result.counterexample
+            res5 = nn0.evaluate_network(result.counterexample_normalized)
+            print(f"Counterexample found at [{x_cex:.1f}, {y_cex:.1f}, {psi_cex:.2f}]")
+            to_return.append([x_cex, y_cex, psi_cex])
+    return to_return
+
+if __name__ == "__main__":
+    model_path = "/home/lucav/git_workspace/acasxu_barrier_cegis/model_outputs/trained_barrier19.onnx"
+    graph_model = load_trained_model(model_path)
+    model = graphmodule_to_sequential(graph_model)
+
+    # nn0 = NNet("/home/lucav/thesis/ACASXu-20251018T095242Z-1-001/ACASXu/rectangular-coordinates/networks/medium/HCAS_rect_v6_pra0_tau00_25HU_02042.nnet")
+    # nn0 = NNet("/home/lucav/thesis/ACASXu-20251018T095242Z-1-001/ACASXu/rectangular-coordinates/networks/mediumbig/HCAS_rect_v6_pra0_tau00_22HU_03565.nnet")
+    nn0 = NNet("/home/lucav/thesis/ACASXu-20251018T095242Z-1-001/ACASXu/rectangular-coordinates/networks/medium23/HCAS_rect_v6_pra0_tau00_23HU_03169.nnet")
+    seq = FeedForwardNet(nn0)
+    counterexamples = []
+    TURN = math.radians(-3.0)
+
+    sequential_multi_verification([-171], 3)
+    
+    print("===-=== SINGULAR ===-===")
+    count_safe = 0
+    count_unsafe = 0
+    for psi_deg in range(-171, 164, 3):
+        print("psi: ", psi_deg)
+        result: VerificationResult = single_verify_motion_property(model, TURN, seq.net, psi_deg, verbose=False)
+        if not result.safe:
+            x_cex, y_cex, psi_cex = result.counterexample
+            res5 = nn0.evaluate_network(result.counterexample_normalized)
+            print(f"Counterexample found at [{x_cex:.1f}, {y_cex:.1f}, {psi_cex:.2f}]")
+            print("res5: ", res5)
+            count_unsafe += 1
+        else:
+            count_safe += 1
+
+    print("safe: ", count_safe)
+    print("unsafe: ", count_unsafe)
