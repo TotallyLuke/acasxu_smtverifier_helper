@@ -16,7 +16,10 @@ from utils import VerificationResult
 
 
 
-def single_verify_motion_property(model: nn.Module, turn, controller, psi_deg_init, verbose=False):
+def single_verify_motion_property(model: nn.Module, turn_index, controller, psi_deg_init, verbose=False):
+    ACTIONS = [math.radians(a) for a in [0.0, 1.5, -1.5, 3.0, -3.0]]
+    turn = ACTIONS[turn_index]
+
     underflow = math.radians(psi_deg_init + 3.0) - turn <= -math.pi + 0.001
     overflow = math.radians(psi_deg_init) - turn >= math.pi - 0.001
     assert not (underflow and overflow)

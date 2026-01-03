@@ -1,0 +1,3 @@
+[submodule "NNet"]
+	path = NNet
+	url = https://github.com/TotallyLuke/NNet.git
