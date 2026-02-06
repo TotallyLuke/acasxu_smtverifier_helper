@@ -14,10 +14,10 @@ from acasxu_smtverifier_helper.add_argmax_output_constraints import add_argmax_o
 from acasxu_smtverifier_helper.trapezoid import secant_line_coeffs, tangent_line_coeffs, psi_to_xy
 from acasxu_smtverifier_helper.utils import VerificationResult
 
+ACTIONS = [math.radians(a) for a in [0.0, 1.5, -1.5, 3.0, -3.0]]
 
 
 def single_verify_motion_property(model: nn.Module, turn_index, controller, psi_deg_init, interv_width = 3.0, verbose=False):
-    ACTIONS = [math.radians(a) for a in [0.0, 1.5, -1.5, 3.0, -3.0]]
     turn = ACTIONS[turn_index]
 
     underflow = math.radians(psi_deg_init + 3.0) - turn <= -math.pi + 0.001
@@ -94,7 +94,6 @@ def single_verify_motion_property(model: nn.Module, turn_index, controller, psi_
         name="state_update_y"
     )
 
-    # add_angle_wrapping_constraint(m, psi, delta_psi, psi_next, "psi")
     m.addConstr(
         psi_next == psi + delta_psi + (underflow*2*math.pi) - (overflow*2*math.pi),
         name="state_update_psi"
@@ -123,7 +122,7 @@ def single_verify_motion_property(model: nn.Module, turn_index, controller, psi_
     # check existence of two inputs producing outputs of opposite sign
     m.addConstr(output <= 0.0, name="output_nonpositive")
     m.addConstr(output_next >= 0.05, name="output_next_positive")
-    add_argmax_output_constraints(m, outputs_controller, 4)
+    add_argmax_output_constraints(m, outputs_controller, turn_index)
 
     start_time = time.time()
     m.optimize()
