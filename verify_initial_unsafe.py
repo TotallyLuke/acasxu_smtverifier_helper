@@ -27,12 +27,12 @@ def verify_unsafe(model: nn.Module, input_bounds, verbose=False) -> Optional[Lis
     # m.addConstr( x + y >= -intercept, name="ineq4")
     # m.addConstr( x >= -10000, name="ineq5")
     # m.addConstr( x <= 10000, name="ineq6")
-    m.addConstr( x**2 + y**2 <= 10000, name="ineq6")
+    m.addConstr( x**2 + y**2 <= 25000, name="ineq6")
     # m.addConstr( y >= -10000, name="ineq7")
     # m.addConstr( y <= 10000, name="ineq8")
 
     out = m.getVarByName("y0_0")
-    m.addConstr(out <= 0.0, name="output_negative")
+    m.addConstr(out  <= 0.0, name="output_negative")
 
 
     if verbose:
